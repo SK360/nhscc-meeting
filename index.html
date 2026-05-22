@@ -242,7 +242,7 @@ function renderForm(status) {
   card.innerHTML = `
     <h2>Check In</h2>
     <label for="name-input">Your name</label>
-    <input type="text" id="name-input" placeholder="First Last" autocomplete="name" autocorrect="off">
+    <input type="text" id="name-input" placeholder="First Last" autocomplete="name" autocapitalize="words" autocorrect="off">
     <div class="toggle">
       <input type="radio" name="source" id="src-person" value="In person" checked>
       <label for="src-person">In person</label>
@@ -258,6 +258,10 @@ function renderForm(status) {
   document.getElementById('name-input').addEventListener('keydown', e => {
     if (e.key === 'Enter') submitCheckin();
   });
+
+  // Pre-fill name from last check-in on this device
+  const savedName = localStorage.getItem('nhscc-name');
+  if (savedName) document.getElementById('name-input').value = savedName;
 }
 
 function renderRoster(checkins) {
@@ -325,6 +329,7 @@ async function submitCheckin() {
     if (data.ok) {
       statusMsg.className  = 'ok';
       statusMsg.textContent = `Checked in as "${name}".`;
+      localStorage.setItem('nhscc-name', name);
       nameInput.value = '';
       loadRoster();
     } else {

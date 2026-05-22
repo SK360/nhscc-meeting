@@ -31,6 +31,10 @@ function setup() {
     sheet.setColumnWidth(COL.TOKEN, 280);
     sheet.setColumnWidth(COL.CHECKIN_URL, 340);
   }
+  // Force Meeting Name and Tab Name columns to plain text so Sheets never
+  // auto-converts values like "May 2026" into Date objects.
+  sheet.getRange(1, COL.MEETING_NAME, sheet.getMaxRows()).setNumberFormat('@');
+  sheet.getRange(1, COL.TAB_NAME,     sheet.getMaxRows()).setNumberFormat('@');
   Logger.log('Setup complete. Meetings tab is ready.');
 }
 
@@ -39,8 +43,9 @@ function setup() {
 function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu('NHSCC')
-    .addItem('New Meeting', 'createMeeting')
-    .addItem('Close Meeting', 'closeMeeting')
+    .addItem('New Meeting',  'createMeeting')
+    .addItem('Show QR',      'showQR')
+    .addItem('Close Meeting','closeMeeting')
     .addToUi();
 }
 
@@ -147,6 +152,53 @@ function closeMeeting() {
   ui.alert(`"${open[idx].name}" is now closed.`);
 }
 
+function showQR() {
+  const ui    = SpreadsheetApp.getUi();
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(MEETINGS_TAB);
+  if (!sheet) { ui.alert('Meetings tab not found.'); return; }
+
+  const data = sheet.getDataRange().getDisplayValues();
+  const open = [];
+  for (let i = 1; i < data.length; i++) {
+    if (data[i][COL.STATUS - 1] === 'open') {
+      open.push({ name: data[i][COL.MEETING_NAME - 1], url: data[i][COL.CHECKIN_URL - 1] });
+    }
+  }
+
+  if (open.length === 0) { ui.alert('No open meetings.'); return; }
+
+  let meeting;
+  if (open.length === 1) {
+    meeting = open[0];
+  } else {
+    const list   = open.map((m, i) => `${i + 1}. ${m.name}`).join('\n');
+    const result = ui.prompt('Show QR', `Open meetings:\n${list}\n\nEnter number:`, ui.ButtonSet.OK_CANCEL);
+    if (result.getSelectedButton() !== ui.Button.OK) return;
+    const idx = parseInt(result.getResponseText().trim(), 10) - 1;
+    if (isNaN(idx) || idx < 0 || idx >= open.length) { ui.alert('Invalid selection.'); return; }
+    meeting = open[idx];
+  }
+
+  const safeUrl = meeting.url.replace(/'/g, '%27');
+  const html = HtmlService.createHtmlOutput(`<!DOCTYPE html>
+<html>
+<body style="font-family:sans-serif;padding:16px;margin:0">
+  <h3 style="margin-top:0">${meeting.name}</h3>
+  <p style="word-break:break-all"><strong>Check-in URL:</strong><br>
+    <a href="${meeting.url}" target="_blank">${meeting.url}</a>
+  </p>
+  <div id="qr"></div>
+  <p style="font-size:12px;color:#666;margin-top:12px">
+    Save or screenshot this QR code. Project it at the meeting and paste the link in Zoom chat.
+  </p>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+  <script>new QRCode(document.getElementById('qr'), {text:'${safeUrl}',width:240,height:240});</script>
+</body>
+</html>`).setWidth(340).setHeight(460);
+
+  ui.showModalDialog(html, 'Check-in QR');
+}
+
 // ── Web app endpoints ─────────────────────────────────────────────────────────
 
 // Receive a check-in.
@@ -186,6 +238,14 @@ function doPost(e) {
         meetingSheet = ss.insertSheet(tabName);
         meetingSheet.appendRow(['Timestamp', 'Name', 'Source']);
         meetingSheet.setFrozenRows(1);
+      }
+      // Duplicate guard — case-insensitive name match
+      if (meetingSheet.getLastRow() > 1) {
+        const names = meetingSheet.getRange(2, 2, meetingSheet.getLastRow() - 1, 1).getValues();
+        const nameLower = name.trim().toLowerCase();
+        if (names.some(r => String(r[0]).toLowerCase() === nameLower)) {
+          return jsonResponse({ ok: false, error: 'Already checked in' });
+        }
       }
       meetingSheet.appendRow([now, name.trim(), source]);
     } finally {
