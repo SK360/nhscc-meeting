@@ -1,5 +1,5 @@
 // Replace with your GitHub Pages URL (no trailing slash)
-const CHECKIN_PAGE_URL = 'https://sk360.github.io/nhscc-meeting';
+const CHECKIN_PAGE_URL = 'https://nhsccpgh.github.io/meeting-checkin';
 const MEETINGS_TAB = 'Meetings';
 
 // 1-based column positions in the Meetings tab
@@ -172,8 +172,10 @@ function doPost(e) {
     }
 
     const now = new Date();
-    if (opensAt  && now < new Date(opensAt))  return jsonResponse({ ok: false, error: 'Meeting has not opened yet' });
-    if (closesAt && now > new Date(closesAt)) return jsonResponse({ ok: false, error: 'Meeting has closed' });
+    const opensAtDate  = opensAt  instanceof Date ? opensAt  : (opensAt  ? new Date(opensAt)  : null);
+    const closesAtDate = closesAt instanceof Date ? closesAt : (closesAt ? new Date(closesAt) : null);
+    if (opensAtDate  && now < opensAtDate)  return jsonResponse({ ok: false, error: 'Meeting has not opened yet' });
+    if (closesAtDate && now > closesAtDate) return jsonResponse({ ok: false, error: 'Meeting has closed' });
 
     const lock = LockService.getScriptLock();
     lock.waitLock(10000);
@@ -199,6 +201,8 @@ function doPost(e) {
 // Return the roster (or just metadata if action=meta).
 function doGet(e) {
   try {
+    if (!e || !e.parameter) return jsonResponse({ ok: false, error: 'No request parameters' });
+
     const token = e.parameter.token;
     if (!token) return jsonResponse({ ok: false, error: 'Missing token' });
 
@@ -237,10 +241,17 @@ function doGet(e) {
 function findMeeting(token) {
   const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(MEETINGS_TAB);
   if (!sheet) return null;
-  const data = sheet.getDataRange().getValues();
+  const range = sheet.getDataRange();
+  const data    = range.getValues();
+  const display = range.getDisplayValues();
   for (let i = 1; i < data.length; i++) {
     if (data[i][COL.TOKEN - 1] === token) {
-      return { row: i + 1, data: data[i] };
+      const row = data[i].slice();
+      // Meeting Name and Tab Name can be auto-converted to Dates by Sheets
+      // (e.g. "May 2026"); use display values to get the actual strings.
+      row[COL.MEETING_NAME - 1] = display[i][COL.MEETING_NAME - 1];
+      row[COL.TAB_NAME - 1]     = display[i][COL.TAB_NAME - 1];
+      return { row: i + 1, data: row };
     }
   }
   return null;
