@@ -12,6 +12,7 @@ const COL = {
   CLOSES_AT:    6,
   CREATED_AT:   7,
   CHECKIN_URL:  8,
+  CODE:         9,
 };
 
 // ── One-time setup ────────────────────────────────────────────────────────────
@@ -26,15 +27,19 @@ function setup() {
   }
   // Only write headers if the sheet is empty
   if (sheet.getLastRow() === 0) {
-    sheet.appendRow(['Token', 'Meeting Name', 'Tab Name', 'Status', 'Opens At', 'Closes At', 'Created At', 'Check-in URL']);
+    sheet.appendRow(['Token', 'Meeting Name', 'Tab Name', 'Status', 'Opens At', 'Closes At', 'Created At', 'Check-in URL', 'Code']);
     sheet.setFrozenRows(1);
     sheet.setColumnWidth(COL.TOKEN, 280);
     sheet.setColumnWidth(COL.CHECKIN_URL, 340);
+  } else if (!sheet.getRange(1, COL.CODE).getValue()) {
+    // Existing sheet from before the backup-code feature — add the header.
+    sheet.getRange(1, COL.CODE).setValue('Code');
   }
-  // Force Meeting Name and Tab Name columns to plain text so Sheets never
-  // auto-converts values like "May 2026" into Date objects.
+  // Force text format on columns Sheets would otherwise mangle:
+  // Meeting Name / Tab Name ("May 2026" → Date) and Code (preserves leading style).
   sheet.getRange(1, COL.MEETING_NAME, sheet.getMaxRows()).setNumberFormat('@');
   sheet.getRange(1, COL.TAB_NAME,     sheet.getMaxRows()).setNumberFormat('@');
+  sheet.getRange(1, COL.CODE,         sheet.getMaxRows()).setNumberFormat('@');
   Logger.log('Setup complete. Meetings tab is ready.');
 }
 
@@ -78,6 +83,7 @@ function createMeeting() {
   const closesText = closesResult.getResponseText().trim();
 
   const token     = Utilities.getUuid();
+  const code      = generateMeetingCode();
   const tabName   = meetingName.replace(/[\/\\?\*\[\]:]/g, '').substring(0, 100).trim();
   const now       = new Date();
   const opensAt   = opensText  ? new Date(opensText)  : '';
@@ -96,27 +102,9 @@ function createMeeting() {
 
   // Append to the Meetings index
   ss.getSheetByName(MEETINGS_TAB)
-    .appendRow([token, meetingName, tabName, 'open', opensAt, closesAt, now, checkinUrl]);
+    .appendRow([token, meetingName, tabName, 'open', opensAt, closesAt, now, checkinUrl, code]);
 
-  // Show URL + QR dialog
-  const safeUrl = checkinUrl.replace(/'/g, '%27');
-  const html = HtmlService.createHtmlOutput(`<!DOCTYPE html>
-<html>
-<body style="font-family:sans-serif;padding:16px;margin:0">
-  <h3 style="margin-top:0">${meetingName}</h3>
-  <p style="word-break:break-all"><strong>Check-in URL:</strong><br>
-    <a href="${checkinUrl}" target="_blank">${checkinUrl}</a>
-  </p>
-  <div id="qr"></div>
-  <p style="font-size:12px;color:#666;margin-top:12px">
-    Save or screenshot this QR code. Project it at the meeting and paste the link in Zoom chat.
-  </p>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
-  <script>new QRCode(document.getElementById('qr'), {text:'${safeUrl}',width:240,height:240});</script>
-</body>
-</html>`).setWidth(340).setHeight(460);
-
-  ui.showModalDialog(html, 'Meeting Created');
+  ui.showModalDialog(meetingDialogHtml(meetingName, checkinUrl, code), 'Meeting Created');
 }
 
 function closeMeeting() {
@@ -161,7 +149,11 @@ function showQR() {
   const open = [];
   for (let i = 1; i < data.length; i++) {
     if (data[i][COL.STATUS - 1] === 'open') {
-      open.push({ name: data[i][COL.MEETING_NAME - 1], url: data[i][COL.CHECKIN_URL - 1] });
+      open.push({
+        name: data[i][COL.MEETING_NAME - 1],
+        url:  data[i][COL.CHECKIN_URL - 1],
+        code: data[i][COL.CODE - 1],
+      });
     }
   }
 
@@ -179,24 +171,33 @@ function showQR() {
     meeting = open[idx];
   }
 
-  const safeUrl = meeting.url.replace(/'/g, '%27');
-  const html = HtmlService.createHtmlOutput(`<!DOCTYPE html>
+  ui.showModalDialog(meetingDialogHtml(meeting.name, meeting.url, meeting.code), 'Check-in QR');
+}
+
+// Shared QR + URL + backup-code dialog used by createMeeting and showQR.
+function meetingDialogHtml(name, url, code) {
+  const safeUrl = url.replace(/'/g, '%27');
+  return HtmlService.createHtmlOutput(`<!DOCTYPE html>
 <html>
 <body style="font-family:sans-serif;padding:16px;margin:0">
-  <h3 style="margin-top:0">${meeting.name}</h3>
+  <h3 style="margin-top:0">${name}</h3>
   <p style="word-break:break-all"><strong>Check-in URL:</strong><br>
-    <a href="${meeting.url}" target="_blank">${meeting.url}</a>
+    <a href="${url}" target="_blank">${url}</a>
   </p>
   <div id="qr"></div>
+  <div style="margin-top:14px;padding:12px;background:#faf6e8;border:1px solid #e8dca8;border-radius:8px;text-align:center">
+    <div style="font-size:12px;color:#666;text-transform:uppercase;letter-spacing:.05em">Backup code</div>
+    <div style="font-size:30px;font-weight:700;letter-spacing:.18em;margin-top:4px">${code}</div>
+    <div style="font-size:12px;color:#666;margin-top:4px">No QR? Go to ${CHECKIN_PAGE_URL} and enter this 4-digit code.</div>
+  </div>
   <p style="font-size:12px;color:#666;margin-top:12px">
-    Save or screenshot this QR code. Project it at the meeting and paste the link in Zoom chat.
+    Save or screenshot this. Project the QR at the meeting and paste the link in Zoom chat;
+    read the backup code aloud for anyone who can't scan it.
   </p>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
   <script>new QRCode(document.getElementById('qr'), {text:'${safeUrl}',width:240,height:240});</script>
 </body>
-</html>`).setWidth(340).setHeight(460);
-
-  ui.showModalDialog(html, 'Check-in QR');
+</html>`).setWidth(340).setHeight(560);
 }
 
 // ── Web app endpoints ─────────────────────────────────────────────────────────
@@ -206,7 +207,9 @@ function showQR() {
 function doPost(e) {
   try {
     const body = JSON.parse(e.postData.contents);
-    const { token, name, source } = body;
+    const { token, source } = body;
+    // Title-case the name so "rick" → "Rick", "matt simmons" → "Matt Simmons"
+    const name = (body.name || '').trim().replace(/\b\w/g, c => c.toUpperCase());
 
     if (!token || !name || !source) {
       return jsonResponse({ ok: false, error: 'Missing fields' });
@@ -263,6 +266,15 @@ function doGet(e) {
   try {
     if (!e || !e.parameter) return jsonResponse({ ok: false, error: 'No request parameters' });
 
+    // Resolve a verbal backup code to a meeting token (open meetings only).
+    if (e.parameter.action === 'resolve') {
+      const code = (e.parameter.code || '').trim();
+      if (!/^\d{4}$/.test(code)) return jsonResponse({ ok: false, error: 'Enter the 4-digit code.' });
+      const match = findMeetingByCode(code);
+      if (!match) return jsonResponse({ ok: false, error: 'No open meeting matches that code.' });
+      return jsonResponse({ ok: true, token: match.token });
+    }
+
     const token = e.parameter.token;
     if (!token) return jsonResponse({ ok: false, error: 'Missing token' });
 
@@ -315,6 +327,40 @@ function findMeeting(token) {
     }
   }
   return null;
+}
+
+// Look up an open meeting by its 6-digit backup code. Returns { token } or null.
+// Only matches open meetings, so a code freed by a closed meeting can be reused safely.
+function findMeetingByCode(code) {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(MEETINGS_TAB);
+  if (!sheet) return null;
+  const range   = sheet.getDataRange();
+  const data    = range.getValues();
+  const display = range.getDisplayValues();
+  for (let i = 1; i < data.length; i++) {
+    if (data[i][COL.STATUS - 1] === 'open' &&
+        String(display[i][COL.CODE - 1]).trim() === String(code).trim()) {
+      return { token: data[i][COL.TOKEN - 1] };
+    }
+  }
+  return null;
+}
+
+// Generate a 6-digit code unique among currently-open meetings.
+function generateMeetingCode() {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(MEETINGS_TAB);
+  const taken = new Set();
+  if (sheet) {
+    const data = sheet.getDataRange().getDisplayValues();
+    for (let i = 1; i < data.length; i++) {
+      if (data[i][COL.STATUS - 1] === 'open') taken.add(String(data[i][COL.CODE - 1]).trim());
+    }
+  }
+  let code;
+  do {
+    code = String(Math.floor(1000 + Math.random() * 9000)); // 1000–9999, no leading zero
+  } while (taken.has(code));
+  return code;
 }
 
 function jsonResponse(obj) {
